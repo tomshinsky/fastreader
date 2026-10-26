@@ -735,6 +735,7 @@ async function renderLibrary() {
       if (!confirm(`Удалить «${bookTitle(b)}» из библиотеки?`)) return;
       await Library.remove(b.id).catch(() => {});
       store.remove(posKey(b.id));
+      if (isSample(b.id)) store.set('fr:sampleDeleted', true);
       renderLibrary();
     });
     return li;
@@ -749,6 +750,10 @@ async function renderLibrary() {
 const SAMPLE_ID = 'sample';
 const SAMPLE_URL = 'samples/sample.txt';
 const OLD_SAMPLE_IDS = ['sample:twelve-chairs-12'];
+
+function isSample(id) {
+  return id === SAMPLE_ID || OLD_SAMPLE_IDS.includes(id);
+}
 
 // Короткий отпечаток текста — чтобы понять, что файл образца поменялся
 function textHash(s) {
@@ -768,10 +773,10 @@ async function syncSample() {
     const text = rest.join('\n').trim();
     if (!title || !text) return;
 
+    if (store.get('fr:sampleDeleted')) return;  // пользователь удалил образец крестиком
     const books = await Library.list();
-    const existing = books.find((b) => b.id === SAMPLE_ID || OLD_SAMPLE_IDS.includes(b.id));
-    if (store.get('fr:sampleSeeded') && !existing) return;  // пользователь удалил образец
-    if (existing?.version === version) return;               // уже свежий
+    const existing = books.find((b) => isSample(b.id));
+    if (existing?.version === version) return;  // уже свежий
 
     if (existing && existing.id !== SAMPLE_ID) {
       await Library.remove(existing.id);
@@ -785,7 +790,6 @@ async function syncSample() {
       wordCount: rawCount, openedAt: existing?.openedAt ?? 0,
     }, sections);
     store.remove(posKey(SAMPLE_ID));  // новый текст — читаем с начала
-    store.set('fr:sampleSeeded', true);
   } catch (err) {
     console.warn('Не удалось обновить образец', err);
   }
