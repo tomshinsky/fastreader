@@ -31,10 +31,17 @@ const posKey = (id) => `fr:pos:${id}`;
 
 // ---------- Разбор текста на слова ----------
 
-// Добавки к базовому времени слова. Берётся одна, самая сильная, — без сложения
-const PAUSE = { paragraph: 1, sentence: 0.6, clause: 0.25 };
-const LENGTH_BONUS = 0.04;   // за каждую букву после шестой
-const MAX_FACTOR = 2;        // ни одно слово не держится дольше двух обычных
+// Добавки к базовому времени слова, в процентах. Из пауз на знаках берётся одна,
+// самая сильная, — без сложения. Пользователь подкручивает их в панели настроек.
+const DEFAULT_TIMING = {
+  length: 4,       // за каждую букву после шестой
+  clause: 25,      // запятая, точка с запятой, двоеточие, перед тире
+  sentence: 60,    // конец предложения
+  paragraph: 100,  // конец абзаца
+  cap: 200,        // потолок: ни одно слово не держится дольше (в % от обычного)
+};
+const LONG_WORD_FROM = 6;
+const timing = { ...DEFAULT_TIMING, ...store.get('fr:timing') };
 
 const SENTENCE_END = /[.!?…]["»”)]*$/;
 const CLAUSE_END = /[,;:—–]["»”)]*$/;
@@ -49,8 +56,12 @@ function tokenize(text, rawStart) {
   for (const para of text.replace(/\r\n?/g, '\n').split(/\n\s*\n/)) {
     const parts = joinPunctuation(para.split(/\s+/).filter(Boolean).map((t) => ({ text: t, raw: raw++ })));
     parts.forEach((w, i) => {
+      // Запоминаем свойства слова, а саму паузу считаем по текущим настройкам —
+      // так её можно пересчитать на ходу, не разбирая книгу заново
       w.paraEnd = i === parts.length - 1;
-      w.pause = pauseFactor(w.text, w.paraEnd, parts[i + 1]?.text);
+      w.stop = stopKind(w.text, w.paraEnd, parts[i + 1]?.text);
+      w.letters = w.text.match(/[\p{L}\p{N}]/gu)?.length || 0;
+      w.pause = pauseFactor(w);
       words.push(w);
     });
   }
@@ -76,14 +87,28 @@ function joinPunctuation(tokens) {
   return out;
 }
 
-function pauseFactor(word, paragraphEnd, nextWord = '') {
-  let pause = 0;
-  if (paragraphEnd) pause = PAUSE.paragraph;
-  else if (SENTENCE_END.test(word)) pause = PAUSE.sentence;
-  else if (CLAUSE_END.test(word) || /^[—–]/.test(nextWord)) pause = PAUSE.clause;
-  const letters = word.match(/[\p{L}\p{N}]/gu)?.length || 0;
-  const length = Math.max(0, letters - 6) * LENGTH_BONUS;
-  return Math.min(1 + pause + length, MAX_FACTOR);
+// Какая пауза положена слову: paragraph, sentence, clause или никакой
+function stopKind(word, paragraphEnd, nextWord = '') {
+  if (paragraphEnd) return 'paragraph';
+  if (SENTENCE_END.test(word)) return 'sentence';
+  if (CLAUSE_END.test(word) || /^[—–]/.test(nextWord)) return 'clause';
+  return null;
+}
+
+function pauseFactor(w) {
+  const stop = w.stop ? timing[w.stop] : 0;
+  const length = Math.max(0, w.letters - LONG_WORD_FROM) * timing.length;
+  return Math.min(100 + stop + length, timing.cap) / 100;
+}
+
+function averageFactor(words) {
+  return words.reduce((sum, w) => sum + w.pause, 0) / (words.length || 1);
+}
+
+// После изменения настроек: новые паузы и новый средний множитель
+function recalcPauses() {
+  for (const w of state.words) w.pause = pauseFactor(w);
+  state.avgFactor = averageFactor(state.words);
 }
 
 function buildBook(sections) {
@@ -98,8 +123,7 @@ function buildBook(sections) {
     for (const w of part.words) words.push(w);
   }
   // Средний множитель — чтобы выбранная скорость была реальной средней скоростью
-  const avgFactor = words.reduce((sum, w) => sum + w.pause, 0) / (words.length || 1);
-  return { words, chapters, rawCount, avgFactor };
+  return { words, chapters, rawCount, avgFactor: averageFactor(words) };
 }
 
 // Первое слово, которое начинается с исходного куска raw или позже
@@ -488,6 +512,113 @@ function changeWpm(delta) {
   store.set('fr:wpm', state.wpm);
   renderWpm();
   renderProgress();
+  renderSettings();
+}
+
+// ---------- Панель настроек ----------
+// Значения меняются на ходу, во время чтения. Рядом — сколько миллисекунд
+// получится при текущей скорости.
+
+const TIMING_ROWS = [
+  { key: 'length', name: 'Длинные слова', hint: 'за букву после шестой; справа — слово из 12 букв', step: 1, min: 0, max: 30, example: 12 },
+  { key: 'clause', name: 'Запятая, тире', step: 5, min: 0, max: 200 },
+  { key: 'sentence', name: 'Конец предложения', step: 5, min: 0, max: 200 },
+  { key: 'paragraph', name: 'Конец абзаца', step: 5, min: 0, max: 300 },
+  { key: 'cap', name: 'Потолок', hint: 'дольше слово не держится', step: 10, min: 100, max: 400 },
+];
+
+function baseMs() {
+  return 60000 / state.wpm / state.avgFactor;
+}
+
+function formatTiming(row, value) {
+  return row.key === 'cap'
+    ? `×${(value / 100).toLocaleString('ru', { minimumFractionDigits: 1 })}`
+    : `+${value}%`;
+}
+
+// Пример времени показа для строки настроек
+function rowMs(row) {
+  const v = timing[row.key];
+  if (row.key === 'cap') return baseMs() * v / 100;
+  const extra = row.key === 'length' ? (row.example - LONG_WORD_FROM) * v : v;
+  return baseMs() * Math.min(100 + extra, timing.cap) / 100;
+}
+
+function buildSettings() {
+  $('settingsRows').replaceChildren(...TIMING_ROWS.map((row) => {
+    const el = document.createElement('div');
+    el.className = 'setting-row';
+    el.innerHTML = `
+      <span class="setting-name"></span>
+      <span class="stepper">
+        <button type="button" data-step="-1" aria-label="Меньше">−</button>
+        <b></b>
+        <button type="button" data-step="1" aria-label="Больше">+</button>
+      </span>
+      <span class="setting-ms"></span>`;
+    el.querySelector('.setting-name').textContent = row.name;
+    if (row.hint) {
+      const small = document.createElement('small');
+      small.textContent = row.hint;
+      el.querySelector('.setting-name').append(small);
+    }
+    el.querySelectorAll('[data-step]').forEach((btn) => {
+      btn.addEventListener('click', () => changeTiming(row, Number(btn.dataset.step) * row.step));
+    });
+    if (row.key === 'length') {
+      const miss = document.createElement('button');
+      miss.type = 'button';
+      miss.className = 'miss';
+      miss.id = 'missBtn';
+      miss.textContent = 'Не успел: длинным словам +1%';
+      miss.addEventListener('click', () => {
+        changeTiming(row, row.step);
+        miss.classList.add('flash');
+        setTimeout(() => miss.classList.remove('flash'), 300);
+      });
+      el.append(miss);
+    }
+    row.el = el;
+    return el;
+  }));
+}
+
+function renderSettings() {
+  $('baseMs').textContent = `${Math.round(baseMs())} мс`;
+  for (const row of TIMING_ROWS) {
+    if (!row.el) continue;
+    const v = timing[row.key];
+    row.el.querySelector('.stepper b').textContent = formatTiming(row, v);
+    row.el.querySelector('[data-step="-1"]').disabled = v <= row.min;
+    row.el.querySelector('[data-step="1"]').disabled = v >= row.max;
+    const ms = `${Math.round(rowMs(row))} мс`;
+    row.el.querySelector('.setting-ms').textContent = ms;
+    if (row.key === 'length') row.el.querySelector('.setting-ms').title = `слово из ${row.example} букв`;
+  }
+}
+
+function changeTiming(row, delta) {
+  timing[row.key] = Math.max(row.min, Math.min(row.max, timing[row.key] + delta));
+  store.set('fr:timing', timing);
+  recalcPauses();
+  renderSettings();
+  renderProgress();
+}
+
+function resetTiming() {
+  Object.assign(timing, DEFAULT_TIMING);
+  store.remove('fr:timing');
+  recalcPauses();
+  renderSettings();
+  renderProgress();
+}
+
+function toggleSettings(open = $('settings').hidden) {
+  $('settings').hidden = !open;
+  $('settingsBtn').setAttribute('aria-expanded', String(open));
+  store.set('fr:settingsOpen', open);
+  if (open) renderSettings();
 }
 
 function saveProgress() {
@@ -555,6 +686,7 @@ function openBook(meta, sections) {
   renderChapters();
   renderWord();
   renderContext();
+  renderSettings();
 
   meta.openedAt = Date.now();
   Library.touch(meta).catch(() => {});
@@ -694,6 +826,8 @@ $('findForm').addEventListener('submit', (e) => {
 $('breakNotice').addEventListener('click', (e) => e.stopPropagation());
 $('breakContinueBtn').addEventListener('click', play);
 $('breakSelect').addEventListener('change', (e) => setBreakMinutes(Number(e.target.value)));
+$('settingsBtn').addEventListener('click', () => toggleSettings());
+$('resetTimingBtn').addEventListener('click', resetTiming);
 
 document.addEventListener('keydown', (e) => {
   if (!state.book || e.target.tagName === 'SELECT' || (e.target.tagName === 'INPUT' && e.target.type !== 'range')) return;
@@ -723,6 +857,8 @@ renderWpm();
 const savedBreak = store.get('fr:break');
 if (Number.isInteger(savedBreak)) state.breakMs = savedBreak * 60000;
 $('breakSelect').value = String(state.breakMs / 60000);
+buildSettings();
+toggleSettings(!!store.get('fr:settingsOpen'));
 
 // Сразу открываем книгу, которую читали в прошлый раз
 const lastId = store.get('fr:last');

@@ -334,21 +334,76 @@ main {
   color: var(--primary-text);
 }
 
-.break-setting {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.break-setting select {
-  font: inherit;
-  color: var(--text);
+/* Панель настроек */
+.settings-toggle { display: flex; justify-content: center; }
+.settings-toggle .ghost { font-size: 13px; padding: 4px 12px; }
+.settings-toggle .ghost[aria-expanded="true"] { border-color: var(--muted); }
+
+.settings {
   background: var(--surface);
   border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.settings-head b { color: var(--text); font-weight: 600; }
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+.setting-name small { display: block; color: var(--muted); font-size: 12px; }
+.setting-ms {
+  min-width: 64px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.stepper { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.stepper b { min-width: 48px; text-align: center; font-weight: 600; }
+.stepper button {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  font-size: 16px;
+  line-height: 1;
+}
+.stepper button:disabled { opacity: .35; cursor: default; }
+.miss {
+  grid-column: 1 / -1;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+  transition: background .15s, color .15s;
+}
+.miss.flash { background: var(--accent); color: #fff; }
+.setting-row select {
+  grid-column: 2 / -1;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 2px 6px;
+  padding: 4px 6px;
 }
 
 .progress input { width: 100%; accent-color: var(--accent); }
@@ -401,6 +456,11 @@ main {
   .reader { gap: 12px; }
   .stage { height: 140px; }
   .reader:not(.is-playing) .stage { height: 96px; }
+  .reader.is-playing .stage { min-height: 120px; }
+  .settings { padding: 8px 12px; gap: 2px; }
+  .setting-name small { display: none; }
+  .setting-row { gap: 6px; min-height: 34px; }
+  .setting-ms { min-width: 52px; font-size: 12px; }
   .reader:not(.is-playing) .guide { display: none; }
   .context { padding: 2px 16px; }
   .wpm { margin-left: 0; width: 100%; justify-content: center; }
