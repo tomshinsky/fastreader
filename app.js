@@ -4,12 +4,14 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   book: null,       // { id, name, wordCount, openedAt }
-  words: [],        // [{ text, pause }]
+  words: [],        // [{ text, pause, raw }]
+  avgFactor: 1,     // средний множитель паузы по книге
   chapters: [],     // [{ title, start }] — start это индекс первого слова главы
   chapter: -1,      // текущая глава
   index: 0,
   playing: false,
   timer: null,
+  dueAt: 0,         // когда по плану должно смениться текущее слово (performance.now)
   wpm: 300,
   warmup: 0,        // сколько слов после старта ещё показываются замедленно
 };
@@ -18,45 +20,92 @@ const MIN_WPM = 100;
 const MAX_WPM = 1200;
 const WPM_STEP = 25;
 const CONTEXT_RADIUS = 40;
+const MAX_LATE_MS = 250;
 
 const posKey = (id) => `fr:pos:${id}`;
 
 // ---------- Разбор текста на слова ----------
 
-function tokenize(text) {
+// Добавки к базовому времени слова. Берётся одна, самая сильная, — без сложения
+const PAUSE = { paragraph: 1, sentence: 0.6, clause: 0.25 };
+const LENGTH_BONUS = 0.04;   // за каждую букву после шестой
+const MAX_FACTOR = 2;        // ни одно слово не держится дольше двух обычных
+
+const SENTENCE_END = /[.!?…]["»”)]*$/;
+const CLAUSE_END = /[,;:—–]["»”)]*$/;
+const HAS_LETTERS = /[\p{L}\p{N}]/u;
+const DASH = /^[—–-]+$/;
+
+// Слово хранит raw — номер исходного «куска через пробел». Он не зависит
+// от правил склейки, поэтому место чтения сохраняется именно в нём.
+function tokenize(text, rawStart) {
   const words = [];
-  const paragraphs = text.replace(/\r\n?/g, '\n').split(/\n\s*\n/);
-  for (const para of paragraphs) {
-    const parts = para.split(/\s+/).filter(Boolean);
+  let raw = rawStart;
+  for (const para of text.replace(/\r\n?/g, '\n').split(/\n\s*\n/)) {
+    const parts = joinPunctuation(para.split(/\s+/).filter(Boolean).map((t) => ({ text: t, raw: raw++ })));
     parts.forEach((w, i) => {
-      words.push({ text: w, pause: pauseFactor(w, i === parts.length - 1) });
+      w.pause = pauseFactor(w.text, i === parts.length - 1, parts[i + 1]?.text);
+      words.push(w);
     });
   }
-  return words;
+  return { words, rawCount: raw - rawStart };
+}
+
+// Одиночное тире приклеиваем к следующему слову («— Тут»), висящую пунктуацию —
+// к предыдущему, а знаки без смысла (звёздочки, разделители) пропускаем
+function joinPunctuation(tokens) {
+  const out = [];
+  let dash = null;
+  for (const t of tokens) {
+    if (HAS_LETTERS.test(t.text)) {
+      out.push(dash ? { text: `${dash.text} ${t.text}`, raw: dash.raw } : t);
+      dash = null;
+    } else if (DASH.test(t.text)) {
+      dash = dash ? { text: `${dash.text} ${t.text}`, raw: dash.raw } : t;
+    } else if (/[.!?…,;:]/.test(t.text) && out.length) {
+      out[out.length - 1].text += t.text;
+    }
+  }
+  if (dash && out.length) out[out.length - 1].text += ` ${dash.text}`;
+  return out;
+}
+
+function pauseFactor(word, paragraphEnd, nextWord = '') {
+  let pause = 0;
+  if (paragraphEnd) pause = PAUSE.paragraph;
+  else if (SENTENCE_END.test(word)) pause = PAUSE.sentence;
+  else if (CLAUSE_END.test(word) || /^[—–]/.test(nextWord)) pause = PAUSE.clause;
+  const letters = word.match(/[\p{L}\p{N}]/gu)?.length || 0;
+  const length = Math.max(0, letters - 6) * LENGTH_BONUS;
+  return Math.min(1 + pause + length, MAX_FACTOR);
 }
 
 function buildBook(sections) {
   const words = [];
   const chapters = [];
+  let rawCount = 0;
   for (const s of sections) {
-    const part = tokenize(s.text);
-    if (!part.length) continue;
+    const part = tokenize(s.text, rawCount);
+    rawCount += part.rawCount;
+    if (!part.words.length) continue;
     chapters.push({ title: s.title, start: words.length });
-    // Конец главы — как конец абзаца, только длиннее
-    part[part.length - 1].pause += 1;
-    for (const w of part) words.push(w);
+    for (const w of part.words) words.push(w);
   }
-  return { words, chapters };
+  // Средний множитель — чтобы выбранная скорость была реальной средней скоростью
+  const avgFactor = words.reduce((sum, w) => sum + w.pause, 0) / (words.length || 1);
+  return { words, chapters, rawCount, avgFactor };
 }
 
-function pauseFactor(word, paragraphEnd) {
-  let f = 1;
-  if (word.length > 8) f += 0.3;
-  if (word.length > 12) f += 0.3;
-  if (/[.!?…]["»”)]*$/.test(word)) f += 1.2;
-  else if (/[,;:—–]["»”)]*$/.test(word)) f += 0.5;
-  if (paragraphEnd) f += 1;
-  return f;
+// Первое слово, которое начинается с исходного куска raw или позже
+function indexOfRaw(raw) {
+  let lo = 0;
+  let hi = state.words.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (state.words[mid].raw < raw) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 // Опорная точка распознавания (ORP) — чуть левее центра слова
@@ -157,7 +206,7 @@ function renderWpm() {
 // ---------- Воспроизведение ----------
 
 function delayFor(word) {
-  let ms = (60000 / state.wpm) * word.pause;
+  let ms = (60000 / state.wpm / state.avgFactor) * word.pause;
   if (state.warmup > 0) {
     ms *= 1 + state.warmup * 0.15;
     state.warmup--;
@@ -165,25 +214,32 @@ function delayFor(word) {
   return ms;
 }
 
-function tick() {
+// Время смены слова считаем от запланированного момента, а не от фактического
+// срабатывания таймера, — так опоздания таймера не накапливаются.
+// Перед запуском новой цепочки старая всегда гасится: двух таймеров быть не может.
+function tick(restart = false) {
+  clearTimeout(state.timer);
+  const now = performance.now();
+  // После сна телефона или фоновой вкладки не «догоняем» пропущенное пачкой слов
+  if (restart || now - state.dueAt > MAX_LATE_MS) state.dueAt = now;
   renderWord();
   saveProgress();
-  const w = state.words[state.index];
+  state.dueAt += delayFor(state.words[state.index]);
   state.timer = setTimeout(() => {
     if (state.index >= state.words.length - 1) { pause(); return; }
     state.index++;
     tick();
-  }, delayFor(w));
+  }, Math.max(0, state.dueAt - now));
 }
 
 function play() {
-  if (!state.words.length) return;
+  if (!state.words.length || state.playing) return;
   if (state.index >= state.words.length - 1) state.index = 0;
   state.playing = true;
   state.warmup = 4;
   $('playBtn').textContent = '❚❚';
   renderContext();
-  tick();
+  tick(true);
 }
 
 function pause() {
@@ -200,10 +256,8 @@ function toggle() {
 }
 
 function jumpTo(i) {
-  const wasPlaying = state.playing;
-  if (wasPlaying) clearTimeout(state.timer);
   state.index = Math.max(0, Math.min(i, state.words.length - 1));
-  if (wasPlaying) { state.warmup = 4; tick(); }
+  if (state.playing) { state.warmup = 4; tick(true); }
   else { renderWord(); renderContext(); saveProgress(); }
 }
 
@@ -240,7 +294,8 @@ function changeWpm(delta) {
 }
 
 function saveProgress() {
-  if (state.book) store.set(posKey(state.book.id), state.index);
+  const w = state.words[state.index];
+  if (state.book && w) store.set(posKey(state.book.id), w.raw);
 }
 
 // ---------- Книги ----------
@@ -261,9 +316,10 @@ async function loadFile(file) {
   setStatus('Читаю файл…');
   try {
     const { title, sections } = await Parsers.parseFile(file);
-    const { words } = buildBook(sections);
+    const { words, rawCount } = buildBook(sections);
     if (!words.length) throw new Error('В файле не найден текст (возможно, это скан без текстового слоя)');
-    const meta = { id: `${file.name}:${file.size}`, name: file.name, title, wordCount: words.length, openedAt: Date.now() };
+    // wordCount считаем в исходных кусках — в тех же единицах, что и сохранённая позиция
+    const meta = { id: `${file.name}:${file.size}`, name: file.name, title, wordCount: rawCount, openedAt: Date.now() };
     try {
       await Library.save(meta, sections);
     } catch (err) {
@@ -282,12 +338,13 @@ async function loadFile(file) {
 
 function openBook(meta, sections) {
   pause();
-  const { words, chapters } = buildBook(sections);
+  const { words, chapters, avgFactor } = buildBook(sections);
   state.book = meta;
   state.words = words;
   state.chapters = chapters;
+  state.avgFactor = avgFactor;
   const saved = store.get(posKey(meta.id));
-  state.index = Number.isInteger(saved) && saved < words.length ? saved : 0;
+  state.index = Number.isInteger(saved) ? indexOfRaw(saved) : 0;
   store.set('fr:last', meta.id);
 
   $('fileName').textContent = bookTitle(meta);
