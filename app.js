@@ -742,27 +742,52 @@ async function renderLibrary() {
   $('booksBlock').hidden = !books.length;
 }
 
-// Образец, чтобы было что попробовать сразу. Кладётся в библиотеку один раз
-// (в том числе тем, у кого уже есть книги); удалённый — не возвращается.
-const SAMPLE = {
-  id: 'sample:twelve-chairs-12',
-  url: 'samples/twelve-chairs-12.txt',
-  name: 'twelve-chairs-12.txt',
-  title: 'Двенадцать стульев, Ильф и Петров: Глава XII',
-  chapter: 'Глава XII. Знойная женщина — мечта поэта',
-};
+// Образец, чтобы было что попробовать сразу. Берётся из samples/sample.txt:
+// первая строка — название в библиотеке, остальное — текст. Чтобы сменить
+// образец, достаточно заменить файл. У кого образец лежит в библиотеке, он
+// обновится; кто его удалил — тому не вернётся.
+const SAMPLE_ID = 'sample';
+const SAMPLE_URL = 'samples/sample.txt';
+const OLD_SAMPLE_IDS = ['sample:twelve-chairs-12'];
 
-async function seedSample() {
-  if (store.get('fr:sampleSeeded')) return;
+// Короткий отпечаток текста — чтобы понять, что файл образца поменялся
+function textHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+async function syncSample() {
   try {
-    const res = await fetch(SAMPLE.url);
+    const res = await fetch(SAMPLE_URL, { cache: 'no-cache' });
     if (!res.ok) return;
-    const sections = [{ title: SAMPLE.chapter, text: await res.text() }];
+    const raw = (await res.text()).replace(/\r\n?/g, '\n').trim();
+    const version = textHash(raw);
+    const [firstLine, ...rest] = raw.split('\n');
+    const title = firstLine.trim();
+    const text = rest.join('\n').trim();
+    if (!title || !text) return;
+
+    const books = await Library.list();
+    const existing = books.find((b) => b.id === SAMPLE_ID || OLD_SAMPLE_IDS.includes(b.id));
+    if (store.get('fr:sampleSeeded') && !existing) return;  // пользователь удалил образец
+    if (existing?.version === version) return;               // уже свежий
+
+    if (existing && existing.id !== SAMPLE_ID) {
+      await Library.remove(existing.id);
+      store.remove(posKey(existing.id));
+      if (store.get('fr:last') === existing.id) store.set('fr:last', SAMPLE_ID);
+    }
+    const sections = [{ title, text }];
     const { rawCount } = buildBook(sections);
-    await Library.save({ id: SAMPLE.id, name: SAMPLE.name, title: SAMPLE.title, wordCount: rawCount, openedAt: 0 }, sections);
+    await Library.save({
+      id: SAMPLE_ID, name: 'sample.txt', title, version,
+      wordCount: rawCount, openedAt: existing?.openedAt ?? 0,
+    }, sections);
+    store.remove(posKey(SAMPLE_ID));  // новый текст — читаем с начала
     store.set('fr:sampleSeeded', true);
   } catch (err) {
-    console.warn('Не удалось добавить образец', err);
+    console.warn('Не удалось обновить образец', err);
   }
 }
 
@@ -858,7 +883,7 @@ toggleSettings(!!store.get('fr:settingsOpen'));
 
 // Сразу открываем книгу, которую читали в прошлый раз
 const lastId = store.get('fr:last');
-seedSample().then(() => {
+syncSample().then(() => {
   if (lastId) openFromLibrary(lastId);
   else renderLibrary();
 });
