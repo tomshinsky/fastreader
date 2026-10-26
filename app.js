@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   book: null,       // { id, name, wordCount, openedAt }
-  words: [],        // [{ text, pause, raw }]
+  words: [],        // [{ text, pause, raw, paraEnd }]
   avgFactor: 1,     // средний множитель паузы по книге
   chapters: [],     // [{ title, start }] — start это индекс первого слова главы
   chapter: -1,      // текущая глава
@@ -14,12 +14,17 @@ const state = {
   dueAt: 0,         // когда по плану должно смениться текущее слово (performance.now)
   wpm: 300,
   warmup: 0,        // сколько слов после старта ещё показываются замедленно
+  breakMs: 20 * 60000,  // напоминать о перерыве через столько чтения (0 — не напоминать)
+  readMs: 0,        // сколько читаем без перерыва (без текущего запуска)
+  playStartedAt: 0,
+  pausedAt: -Infinity,
 };
 
 const MIN_WPM = 100;
 const MAX_WPM = 1200;
 const WPM_STEP = 25;
-const CONTEXT_RADIUS = 40;
+const CONTEXT_CHUNK = 400;      // сколько слов текста дорисовывать за раз
+const CONTEXT_EDGE_PX = 400;    // за сколько пикселей до края текста подгружать ещё
 const MAX_LATE_MS = 250;
 
 const posKey = (id) => `fr:pos:${id}`;
@@ -44,7 +49,8 @@ function tokenize(text, rawStart) {
   for (const para of text.replace(/\r\n?/g, '\n').split(/\n\s*\n/)) {
     const parts = joinPunctuation(para.split(/\s+/).filter(Boolean).map((t) => ({ text: t, raw: raw++ })));
     parts.forEach((w, i) => {
-      w.pause = pauseFactor(w.text, i === parts.length - 1, parts[i + 1]?.text);
+      w.paraEnd = i === parts.length - 1;
+      w.pause = pauseFactor(w.text, w.paraEnd, parts[i + 1]?.text);
       words.push(w);
     });
   }
@@ -182,21 +188,157 @@ function renderChapters() {
   state.chapter = -1;
 }
 
-function renderContext() {
-  const box = $('context');
-  if (state.playing || !state.words.length) { box.hidden = true; return; }
-  const from = Math.max(0, state.index - CONTEXT_RADIUS);
-  const to = Math.min(state.words.length, state.index + CONTEXT_RADIUS);
-  box.replaceChildren();
+// ---------- Текст на паузе ----------
+// Показываем кусок книги вокруг текущего слова, с абзацами и заголовками глав.
+// При прокрутке к краю дорисовываем ещё — так можно листать сколько угодно,
+// не создавая сразу сотни тысяч элементов.
+
+const view = { from: 0, to: 0 };  // какие слова сейчас нарисованы: [from, to)
+
+function paragraphStart(i) {
+  i = Math.max(0, Math.min(i, state.words.length - 1));
+  while (i > 0 && !state.words[i - 1].paraEnd) i--;
+  return i;
+}
+
+function paragraphEnd(i) {
+  i = Math.max(0, Math.min(i, state.words.length - 1));
+  while (i < state.words.length - 1 && !state.words[i].paraEnd) i++;
+  return i + 1;
+}
+
+function buildText(from, to) {
+  const frag = document.createDocumentFragment();
+  const starts = new Map(state.chapters.map((c) => [c.start, c.title]));
+  let p = null;
   for (let i = from; i < to; i++) {
+    if (starts.has(i) && state.chapters.length > 1) {
+      const h = document.createElement('h3');
+      h.textContent = starts.get(i);
+      frag.append(h);
+    }
+    if (!p) {
+      p = document.createElement('p');
+      frag.append(p);
+    }
     const span = document.createElement('span');
     span.textContent = state.words[i].text;
     span.dataset.i = i;
     if (i === state.index) span.className = 'current';
-    box.append(span, ' ');
+    p.append(span, ' ');
+    if (state.words[i].paraEnd) p = null;
   }
-  box.hidden = false;
-  box.querySelector('.current')?.scrollIntoView({ block: 'center' });
+  return frag;
+}
+
+function renderContext() {
+  const tv = $('textview');
+  $('reader').classList.toggle('is-playing', state.playing);
+  if (state.playing || !state.words.length) { tv.hidden = true; return; }
+
+  const box = $('context');
+  const fresh = tv.hidden || state.index < view.from || state.index >= view.to;
+  tv.hidden = false;
+  if (fresh) {
+    view.from = paragraphStart(state.index - CONTEXT_CHUNK);
+    view.to = paragraphEnd(state.index + CONTEXT_CHUNK);
+    box.replaceChildren(buildText(view.from, view.to));
+  } else {
+    box.querySelector('.current')?.classList.remove('current');
+    box.querySelector(`[data-i="${state.index}"]`)?.classList.add('current');
+  }
+  scrollToCurrent(fresh ? 'center' : 'nearest');
+}
+
+// Прокручиваем только сам блок текста, не всю страницу
+function scrollToCurrent(mode) {
+  const box = $('context');
+  const el = box.querySelector('.current');
+  if (!el) return;
+  const top = el.offsetTop;  // .context спозиционирован, отсчёт идёт от него
+  if (mode === 'center') {
+    box.scrollTop = top - box.clientHeight / 2;
+  } else if (top < box.scrollTop || top > box.scrollTop + box.clientHeight - el.offsetHeight) {
+    box.scrollTop = top - box.clientHeight / 3;
+  }
+}
+
+function extendContext() {
+  const box = $('context');
+  if (box.scrollTop < CONTEXT_EDGE_PX && view.from > 0) {
+    const from = paragraphStart(view.from - CONTEXT_CHUNK);
+    const before = box.scrollHeight;
+    box.prepend(buildText(from, view.from));
+    box.scrollTop += box.scrollHeight - before;  // текст не должен «прыгнуть»
+    view.from = from;
+  }
+  if (box.scrollHeight - box.scrollTop - box.clientHeight < CONTEXT_EDGE_PX && view.to < state.words.length) {
+    const to = paragraphEnd(view.to + CONTEXT_CHUNK);
+    box.append(buildText(view.to, to));
+    view.to = to;
+  }
+}
+
+// ---------- Поиск места по фразе ----------
+// Сравниваем без регистра, знаков препинания и разницы «е/ё».
+
+const search = { book: null, text: '', offsets: [] };
+
+function normalize(s) {
+  return s.toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+function buildSearchIndex() {
+  if (search.book === state.book) return;
+  const parts = [];
+  const offsets = [];
+  let pos = 0;
+  for (const w of state.words) {
+    const n = normalize(w.text);
+    offsets.push(pos);
+    parts.push(n);
+    pos += n.length + 1;
+  }
+  search.book = state.book;
+  search.text = parts.join(' ');
+  search.offsets = offsets;
+}
+
+function wordAtOffset(offset) {
+  let lo = 0;
+  let hi = search.offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (search.offsets[mid] <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// Ищем после текущего слова, а дойдя до конца книги — с начала
+function findPhrase(query) {
+  const q = normalize(query);
+  if (!q) return;
+  buildSearchIndex();
+  const from = (search.offsets[state.index + 1] ?? search.text.length);
+  let at = search.text.indexOf(q, from);
+  const wrapped = at < 0;
+  if (wrapped) at = search.text.indexOf(q);
+  const status = $('findStatus');
+  status.hidden = false;
+  if (at < 0) {
+    status.textContent = 'Не нашёл такую фразу';
+    return;
+  }
+  const first = wordAtOffset(at);
+  const last = wordAtOffset(at + q.length - 1);
+  $('context').querySelectorAll('.found').forEach((el) => el.classList.remove('found'));
+  jumpTo(first);
+  for (let i = first; i <= last; i++) $('context').querySelector(`[data-i="${i}"]`)?.classList.add('found');
+  const c = state.chapters[chapterAt(first)];
+  status.textContent = (wrapped ? 'Дошёл до конца и начал сначала. ' : '')
+    + (state.chapters.length > 1 ? `Нашёл: ${c.title}. ` : 'Нашёл. ')
+    + 'Ещё раз «Найти» — следующее совпадение.';
 }
 
 function renderWpm() {
@@ -227,14 +369,65 @@ function tick(restart = false) {
   state.dueAt += delayFor(state.words[state.index]);
   state.timer = setTimeout(() => {
     if (state.index >= state.words.length - 1) { pause(); return; }
+    if (breakDue(state.index)) { takeBreak(); return; }
     state.index++;
     tick();
   }, Math.max(0, state.dueAt - now));
 }
 
+// ---------- Перерывы ----------
+// Считаем время непрерывного чтения. Когда подходит срок, останавливаемся
+// в конце главы, а если до него далеко или глав нет — в конце абзаца.
+// Пауза дольше REST_MS считается отдыхом и обнуляет счётчик.
+
+const BREAK_LOOKAHEAD_MS = 3 * 60000;  // насколько готовы дочитать до конца главы
+const REST_MS = 2 * 60000;
+
+function readingMs() {
+  return state.readMs + (state.playing ? performance.now() - state.playStartedAt : 0);
+}
+
+function breakDue(i) {
+  if (!state.breakMs) return false;
+  const w = state.words[i];
+  if (!w.paraEnd) return false;
+  const elapsed = readingMs();
+  const end = chapterEnd(chapterAt(i));
+  const isChapterEnd = i === end - 1;
+  // Конец главы незадолго до срока — хорошее место, не начинаем новую главу
+  if (isChapterEnd) return elapsed >= state.breakMs - BREAK_LOOKAHEAD_MS;
+  if (elapsed < state.breakMs) return false;
+  // Срок вышел: если до конца главы недалеко — дочитываем, иначе стоп на этом абзаце
+  const msToChapterEnd = (end - 1 - i) * 60000 / state.wpm;
+  return msToChapterEnd > BREAK_LOOKAHEAD_MS;
+}
+
+function takeBreak() {
+  const minutes = Math.max(1, Math.round(readingMs() / 60000));
+  state.index++;  // продолжим с начала следующего абзаца
+  pause();
+  state.readMs = 0;
+  $('breakText').textContent = `Вы читаете ${minutes} мин без перерыва. Дайте глазам отдохнуть: посмотрите вдаль, поморгайте.`;
+  showBreakNotice(true);
+}
+
+function showBreakNotice(show) {
+  $('breakNotice').hidden = !show;
+  $('reader').classList.toggle('on-break', show);
+}
+
+function setBreakMinutes(min) {
+  state.breakMs = min * 60000;
+  store.set('fr:break', min);
+}
+
 function play() {
   if (!state.words.length || state.playing) return;
   if (state.index >= state.words.length - 1) state.index = 0;
+  const now = performance.now();
+  if (now - state.pausedAt > REST_MS) state.readMs = 0;
+  showBreakNotice(false);
+  state.playStartedAt = now;
   state.playing = true;
   state.warmup = 4;
   $('playBtn').textContent = '❚❚';
@@ -243,6 +436,10 @@ function play() {
 }
 
 function pause() {
+  if (state.playing) {
+    state.readMs += performance.now() - state.playStartedAt;
+    state.pausedAt = performance.now();
+  }
   state.playing = false;
   clearTimeout(state.timer);
   $('playBtn').textContent = '▶';
@@ -343,6 +540,10 @@ function openBook(meta, sections) {
   state.words = words;
   state.chapters = chapters;
   state.avgFactor = avgFactor;
+  view.from = view.to = 0;  // текст на паузе — от новой книги
+  showBreakNotice(false);
+  $('findStatus').hidden = true;
+  $('findInput').value = '';
   const saved = store.get(posKey(meta.id));
   state.index = Number.isInteger(saved) ? indexOfRaw(saved) : 0;
   store.set('fr:last', meta.id);
@@ -414,6 +615,30 @@ async function renderLibrary() {
   $('booksBlock').hidden = !books.length;
 }
 
+// Образец, чтобы было что попробовать сразу. Кладётся в библиотеку один раз
+// (в том числе тем, у кого уже есть книги); удалённый — не возвращается.
+const SAMPLE = {
+  id: 'sample:twelve-chairs-12',
+  url: 'samples/twelve-chairs-12.txt',
+  name: 'twelve-chairs-12.txt',
+  title: 'Двенадцать стульев, Ильф и Петров: Глава XII',
+  chapter: 'Глава XII. Знойная женщина — мечта поэта',
+};
+
+async function seedSample() {
+  if (store.get('fr:sampleSeeded')) return;
+  try {
+    const res = await fetch(SAMPLE.url);
+    if (!res.ok) return;
+    const sections = [{ title: SAMPLE.chapter, text: await res.text() }];
+    const { rawCount } = buildBook(sections);
+    await Library.save({ id: SAMPLE.id, name: SAMPLE.name, title: SAMPLE.title, wordCount: rawCount, openedAt: 0 }, sections);
+    store.set('fr:sampleSeeded', true);
+  } catch (err) {
+    console.warn('Не удалось добавить образец', err);
+  }
+}
+
 // ---------- События ----------
 
 function openPicker() { $('fileInput').click(); }
@@ -461,6 +686,14 @@ $('context').addEventListener('click', (e) => {
   const i = e.target.dataset?.i;
   if (i !== undefined) jumpTo(Number(i));
 });
+$('context').addEventListener('scroll', extendContext, { passive: true });
+$('findForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  findPhrase($('findInput').value);
+});
+$('breakNotice').addEventListener('click', (e) => e.stopPropagation());
+$('breakContinueBtn').addEventListener('click', play);
+$('breakSelect').addEventListener('change', (e) => setBreakMinutes(Number(e.target.value)));
 
 document.addEventListener('keydown', (e) => {
   if (!state.book || e.target.tagName === 'SELECT' || (e.target.tagName === 'INPUT' && e.target.type !== 'range')) return;
@@ -487,8 +720,13 @@ navigator.storage?.persist?.().catch(() => {});
 
 state.wpm = store.get('fr:wpm') || state.wpm;
 renderWpm();
+const savedBreak = store.get('fr:break');
+if (Number.isInteger(savedBreak)) state.breakMs = savedBreak * 60000;
+$('breakSelect').value = String(state.breakMs / 60000);
 
 // Сразу открываем книгу, которую читали в прошлый раз
 const lastId = store.get('fr:last');
-if (lastId) openFromLibrary(lastId);
-else renderLibrary();
+seedSample().then(() => {
+  if (lastId) openFromLibrary(lastId);
+  else renderLibrary();
+});

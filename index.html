@@ -53,9 +53,22 @@
           <span class="left" id="wLeft"></span><span class="pivot" id="wPivot"></span><span class="right" id="wRight"></span>
         </div>
         <div class="guide bottom"></div>
+        <div class="break-notice" id="breakNotice" hidden>
+          <div class="break-title">Пора сделать паузу</div>
+          <div class="break-text" id="breakText"></div>
+          <button type="button" id="breakContinueBtn">Продолжить чтение</button>
+        </div>
       </div>
 
-      <div class="context" id="context" hidden></div>
+      <!-- На паузе: текст вокруг текущего слова и поиск места по фразе -->
+      <div class="textview" id="textview" hidden>
+        <form class="find" id="findForm">
+          <input type="search" id="findInput" placeholder="Найти место по фразе" enterkeyhint="search" autocomplete="off">
+          <button type="submit">Найти</button>
+        </form>
+        <div class="find-status" id="findStatus" hidden></div>
+        <div class="context" id="context"></div>
+      </div>
 
       <div class="progress">
         <input type="range" id="seek" min="0" max="0" value="0" aria-label="Позиция в тексте">
@@ -76,6 +89,17 @@
           <button type="button" id="fasterBtn" title="Быстрее (↑)">+</button>
         </div>
       </div>
+      <label class="break-setting">
+        Перерыв
+        <select id="breakSelect">
+          <option value="10">каждые 10 мин</option>
+          <option value="15">каждые 15 мин</option>
+          <option value="20">каждые 20 мин</option>
+          <option value="30">каждые 30 мин</option>
+          <option value="45">каждые 45 мин</option>
+          <option value="0">не напоминать</option>
+        </select>
+      </label>
       <div class="hint">Пробел — старт/пауза · ← → — по предложениям · ↑ ↓ — скорость · PgUp PgDn — по главам</div>
     </section>
   </main>
