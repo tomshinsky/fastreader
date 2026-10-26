@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>FastReader</title>
+  <meta name="description" content="Быстрое чтение книг по одному слову">
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141416" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="FastReader">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">FastReader</div>
+    <div class="file-name" id="fileName"></div>
+    <button class="ghost" id="libraryBtn" type="button" hidden>Библиотека</button>
+    <button class="ghost" id="openBtn" type="button" title="Открыть файл книги">Открыть</button>
+    <input type="file" id="fileInput" accept=".txt,.epub,.pdf,text/plain,application/epub+zip,application/pdf" hidden>
+  </header>
+
+  <main>
+    <section class="library" id="library">
+      <div class="dropzone" id="dropzone">
+        <div class="drop-title">Перетащите книгу сюда</div>
+        <div class="drop-sub">TXT, EPUB или PDF — или <button class="link" id="pickBtn" type="button">выберите файл</button></div>
+        <div class="drop-status" id="status"></div>
+      </div>
+      <div class="books" id="booksBlock" hidden>
+        <h2>Ваши книги</h2>
+        <ul id="booksList"></ul>
+      </div>
+    </section>
+
+    <section class="reader" id="reader" hidden>
+      <div class="chapters">
+        <button type="button" id="prevChapterBtn" title="Предыдущая глава (Page Up)">‹</button>
+        <select id="chapterSelect" aria-label="Глава"></select>
+        <button type="button" id="nextChapterBtn" title="Следующая глава (Page Down)">›</button>
+      </div>
+
+      <div class="stage" id="stage">
+        <div class="guide top"></div>
+        <div class="word" id="word">
+          <span class="left" id="wLeft"></span><span class="pivot" id="wPivot"></span><span class="right" id="wRight"></span>
+        </div>
+        <div class="guide bottom"></div>
+      </div>
+
+      <div class="context" id="context" hidden></div>
+
+      <div class="progress">
+        <input type="range" id="seek" min="0" max="0" value="0" aria-label="Позиция в тексте">
+        <div class="progress-info">
+          <span id="posInfo">0 / 0</span>
+          <span id="chapterTimeInfo"></span>
+          <span id="timeInfo"></span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button type="button" id="backBtn" title="Назад на предложение (←)">⏮</button>
+        <button type="button" class="primary" id="playBtn" title="Старт / пауза (пробел)">▶</button>
+        <button type="button" id="fwdBtn" title="Вперёд на предложение (→)">⏭</button>
+        <div class="wpm">
+          <button type="button" id="slowerBtn" title="Медленнее (↓)">−</button>
+          <span><b id="wpmVal">300</b> слов/мин</span>
+          <button type="button" id="fasterBtn" title="Быстрее (↑)">+</button>
+        </div>
+      </div>
+      <div class="hint">Пробел — старт/пауза · ← → — по предложениям · ↑ ↓ — скорость · PgUp PgDn — по главам</div>
+    </section>
+  </main>
+
+  <script src="storage.js"></script>
+  <script src="parsers.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
