@@ -216,6 +216,7 @@ main {
   border: 1px solid var(--line);
   border-radius: 16px;
   height: 200px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -386,16 +387,17 @@ main {
 }
 .stepper button:disabled { opacity: .35; cursor: default; }
 .miss {
-  grid-column: 1 / -1;
-  height: 36px;
-  border-radius: 8px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
+  height: 48px;
+  margin-bottom: 4px;
+  border-radius: 10px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 16px;
   font-weight: 600;
-  transition: background .15s, color .15s;
+  transition: transform .1s, filter .15s;
 }
-.miss.flash { background: var(--accent); color: #fff; }
+.miss.flash { transform: scale(0.97); filter: brightness(1.2); }
 .setting-row select {
   grid-column: 2 / -1;
   font: inherit;

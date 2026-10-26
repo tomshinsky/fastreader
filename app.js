@@ -566,19 +566,6 @@ function buildSettings() {
     el.querySelectorAll('[data-step]').forEach((btn) => {
       btn.addEventListener('click', () => changeTiming(row, Number(btn.dataset.step) * row.step));
     });
-    if (row.key === 'length') {
-      const miss = document.createElement('button');
-      miss.type = 'button';
-      miss.className = 'miss';
-      miss.id = 'missBtn';
-      miss.textContent = 'Не успел: длинным словам +1%';
-      miss.addEventListener('click', () => {
-        changeTiming(row, row.step);
-        miss.classList.add('flash');
-        setTimeout(() => miss.classList.remove('flash'), 300);
-      });
-      el.append(miss);
-    }
     row.el = el;
     return el;
   }));
@@ -604,6 +591,14 @@ function changeTiming(row, delta) {
   recalcPauses();
   renderSettings();
   renderProgress();
+}
+
+// «Не успел» — главная кнопка панели: +1 п.п. за букву длинным словам
+function missedWord() {
+  changeTiming(TIMING_ROWS.find((r) => r.key === 'length'), 1);
+  const btn = $('missBtn');
+  btn.classList.add('flash');
+  setTimeout(() => btn.classList.remove('flash'), 300);
 }
 
 function resetTiming() {
@@ -828,6 +823,7 @@ $('breakContinueBtn').addEventListener('click', play);
 $('breakSelect').addEventListener('change', (e) => setBreakMinutes(Number(e.target.value)));
 $('settingsBtn').addEventListener('click', () => toggleSettings());
 $('resetTimingBtn').addEventListener('click', resetTiming);
+$('missBtn').addEventListener('click', missedWord);
 
 document.addEventListener('keydown', (e) => {
   if (!state.book || e.target.tagName === 'SELECT' || (e.target.tagName === 'INPUT' && e.target.type !== 'range')) return;
